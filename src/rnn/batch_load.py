@@ -5,12 +5,34 @@ Created on Fri Mar  6 19:14:52 2020
 @author: rapha
 """
 import glob
-import os 
+from datetime import datetime
+import os
+import pickle
+import math
+import time
+import argparse
+import numpy as np
+import time
+
+import matplotlib
+import matplotlib.pyplot as plt
+
+from torch import nn, optim
+import torch
+from tqdm import tqdm
+
+import os
+
+import torch
+import torch.nn as nn
+import torch.nn.utils
+import torch.nn.functional as F
 
 def folder2scores(path, vocab):
     scores = []
     print("Processing file: ")
-    for file in glob.glob(path + "/MIDI-Unprocessed_R1_D1-1-8_mid--AUDIO*.midi"):
+    #for file in glob.glob(path + "/MIDI-Unprocessed_R1_D1-1-8_mid--AUDIO*.midi"):
+    for file in glob.glob(path + "/*"):
         print(file)
         midi_file = Path(file)
         item = MusicItem.from_file(midi_file, vocab)
@@ -60,4 +82,4 @@ if __name__ == "__main__":
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         
-    train(rnn, train_data=scores, vocab=vocab, output_path=output_path, batch_size=64, n_epochs=10, lr=0.0005)
+    train(rnn, train_data=scores, dev_data = [], vocab=vocab, output_dir=output_dir, batch_size=64, n_epochs=10, lr=0.0005)

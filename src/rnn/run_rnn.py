@@ -12,6 +12,10 @@ import math
 import time
 import argparse
 import numpy as np
+import time
+
+import matplotlib
+import matplotlib.pyplot as plt
 
 from torch import nn, optim
 import torch
@@ -114,7 +118,7 @@ def targetTensor(chordarr):
     letter_indexes.append(n_letters - 1) # EOS
     return torch.LongTensor(letter_indexes)
 
-def train(rnn, train_data, vocab, output_path, batch_size=8, n_epochs=10, lr=0.0005):
+def train(rnn, train_data, dev_data, vocab, output_dir, batch_size=8, n_epochs=10, lr=0.0005):
     """ Train music RNN.
 
     @param parser (Parser): Neural Dependency Parser
@@ -137,20 +141,53 @@ def train(rnn, train_data, vocab, output_path, batch_size=8, n_epochs=10, lr=0.0
     ### Please see the following docs for support:
     ###     Adam Optimizer: https://pytorch.org/docs/stable/optim.html
     ###     Cross Entropy Loss: https://pytorch.org/docs/stable/nn.html#crossentropyloss
+    t0 = time.time()
     optimizer = optim.Adam(rnn.parameters())
     loss_func = nn.CrossEntropyLoss(reduction='mean')
     ### END YOUR CODE
 
+    output_path = output_dir + "model.weights"
+    train_losses = []
     for epoch in range(n_epochs):
         print("Epoch {:} out of {:}".format(epoch + 1, n_epochs))
-        curr_train_loss = train_for_epoch(rnn, train_data, vocab, optimizer, loss_func, batch_size)
+        curr_train_loss = train_for_epoch(rnn, train_data, dev_data, vocab, optimizer, loss_func, batch_size)
+        train_losses.append(curr_train_loss)
         if True:
             print("Saving model. Loss:{}".format(curr_train_loss))
             rnn.save(output_path)
         print("")
+    
+    matplotlib.use('Agg') #avoid display
+    plt.cla()
+    plt.clf()
+    plt.close()
+    
+    plt.xlabel('Number Epochs', fontsize=18)
+    plt.ylabel('Loss', fontsize=16)
+    
+    plt.plot([i for i in range(n_epochs)], train_losses)
+    plt.savefig(output_dir + '/loss.png')
+    
+    tf_h = np.floor((time.time()-t0)/360)
+    tf_m = (time.time()-t0 - tf_h*360)/60
+    print("Training done in {0:.0f} hours {1:.0f} minutes".format(tf_h, tf_m))
+    
+
+def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
+    if shuffle:
+        indices = np.arange(inputs.shape[1])
+        np.random.shuffle(indices)
+    for start_idx in range(0, inputs.shape[1], batchsize):
+        end_idx = min(start_idx + batchsize, inputs.shape[1])
+        if shuffle:
+            excerpt = indices[start_idx:end_idx]
+        else:
+            excerpt = slice(start_idx, end_idx)
+        yield inputs[:,excerpt,:], targets[excerpt,:]
 
 
-def train_for_epoch(rnn, scores, vocab, optimizer, loss_func, batch_size):
+        
+def train_for_epoch(rnn, scores, dev_scores, vocab, optimizer, loss_func, batch_size):
     """ Train the neural dependency parser for single epoch.
 
     Note: In PyTorch we can signify train versus test and automatically have
@@ -167,6 +204,7 @@ def train_for_epoch(rnn, scores, vocab, optimizer, loss_func, batch_size):
 
     @return dev_UAS (float): Unlabeled Attachment Score (UAS) for dev data
     """
+    
     rnn.train() # Places model in "train" mode, i.e. apply dropout layer
     n_minibatches = math.ceil(len(scores) / batch_size)
     loss_meter = AverageMeter()
@@ -174,37 +212,26 @@ def train_for_epoch(rnn, scores, vocab, optimizer, loss_func, batch_size):
     pad_scores = pad_emb_scores(scores, vocab)
     onehot_inputs = batch_tensor2onehot(pad_scores, vocab)
 
-    with tqdm(total=(n_minibatches)) as prog:
-        optimizer.zero_grad()   # remove any baggage in the optimizer
-        loss = 0. # store loss for this batch here
-        T, B, E = onehot_inputs.shape # Timesteps, Batch_size, Embedding_size
-        train_y = pad_scores[:,1:] #shift all by 1
-        #train_y = inputs[1:,:,:] #shift all by 1
-        #train_y = torch.cat((train_y, torch.zeros((1, B, E))), 0) #All 0's for the last time step
-        
-        #for x_train, y_train in batch_iter(data, batch_size, suffle=True):
-        ### YOUR CODE HERE (~5-10 lines)
-        ### Description
-        ###      1) Run train_x forward through model to produce `logits`
-        ###      2) Use the `loss_func` parameter to apply the PyTorch CrossEntropyLoss function.
-        ###         This will take `logits` and `train_y` as inputs. It will output the CrossEntropyLoss
-        ###         between softmax(`logits`) and `train_y`. Remember that softmax(`logits`)
-        ###         are the predictions (y^ from the PDF).
-        ###      3) Backprop losses
-        ###      4) Take step with the optimizer
-        ### Remarks:
-        ###      - the loss does not take one-hot vectors as targets, but the correct class index
-        hidden = torch.zeros(1, B, rnn.hidden_size)
-        logits, last_hidden  = rnn.forward(onehot_inputs, hidden) # Tensor: (timesteps, batch_size, emb_size)
-        loss = 0
-        for b in range(B):
-            #Rk: the loss does not take
-            loss += loss_func(logits[:-1,b,:], train_y[b,:])/B
-        loss.backward()
-        optimizer.step()
-        ### END YOUR CODE
-        prog.update(1)
-        loss_meter.update(loss.item())
+    with tqdm(total=n_minibatches) as prog:
+        all_train_y = pad_scores[:,1:] #shift all by 1
+        for train_x, train_y in iterate_minibatches(onehot_inputs, all_train_y, batch_size):
+            optimizer.zero_grad()   # remove any baggage in the optimizer
+            loss = 0. # store loss for this batch here
+            T, B, E = train_x.shape # Timesteps, Batch_size, Embedding_size
+    
+    
+            hidden = torch.zeros(1, B, rnn.hidden_size)
+            logits, last_hidden  = rnn.forward(train_x, hidden) # Tensor: (timesteps, batch_size, emb_size)
+            loss = 0
+            for b in range(B):
+                #Rk: the loss does not take
+                loss += loss_func(logits[:-1,b,:], train_y[b,:].T)/B
+            loss.backward()
+            optimizer.step()
+            ### END YOUR CODE
+            prog.update(1)
+            print('a')
+            loss_meter.update(loss.item())
 
     print ("Average Train Loss: {}".format(loss_meter.avg))
     
@@ -216,7 +243,38 @@ def train_for_epoch(rnn, scores, vocab, optimizer, loss_func, batch_size):
     #print("- dev UAS: {:.2f}".format(dev_UAS * 100.0))
     #return dev_UAS
 
-def filter_invalid_indexes(res, prev_idx, vocab, filter_value=-float('Inf')):
+def evaluate(model, scores, vocab):
+    x_t = tensor2onehot(np.array([vocab.stoi['xxpad']]), vocab).unsqueeze(1)
+    h_t = torch.zeros(1, 1, model.hidden_size)
+    
+    output = [vocab.stoi['xxbos'], vocab.stoi['xxpad']]
+    prev_idx = vocab.stoi['xxpad']
+    
+    t = 0
+    while t <= T:
+        xout_t, h_t = model.forward(x_t, h_t)
+        xout_t_corrected = filter_indexes(xout_t.squeeze(), prev_idx, vocab)
+        xhat_t = F.softmax(xout_t_corrected)
+        
+        x_t = np.random.choice(model.emb_size, 1, p=xhat_t.detach().numpy())
+        #while x_t[0] == vocab.stoi['xxpad']:
+            #while vocab.is_duration_or_pad(x_t[0]) == is_duration_prev:
+                #vocab.dur_range --> look at music_transformer/learner.py
+        prev_idx = x_t[0]
+        output.append(x_t[0])
+        x_t = tensor2onehot(x_t, vocab).unsqueeze(1)
+        
+        t+=1
+
+    output.append(vocab.stoi['xxeos'])
+    
+    return output
+
+
+def filter_indexes(res, prev_idx, vocab, filter_value=-float('Inf')):
+    res[vocab.stoi['xxpad']] = filter_value
+    res[vocab.dur_range[0]+17:] = filter_value
+    
     if vocab.is_duration_or_pad(prev_idx):
         res[list(range(*vocab.dur_range))] = filter_value
     elif prev_idx == vocab.stoi['xxsep']:
@@ -227,7 +285,6 @@ def filter_invalid_indexes(res, prev_idx, vocab, filter_value=-float('Inf')):
         res[vocab.stoi['xxsep']] = filter_value
     else:
         res[list(range(*vocab.note_range))] = filter_value
-    res[vocab.stoi['xxpad']] = filter_value
     
     return res
 
@@ -241,7 +298,7 @@ def predict(model, vocab, T):
     t = 0
     while t <= T:
         xout_t, h_t = model.forward(x_t, h_t)
-        xout_t_corrected = filter_invalid_indexes(xout_t.squeeze(), prev_idx, vocab)
+        xout_t_corrected = filter_indexes(xout_t.squeeze(), prev_idx, vocab)
         xhat_t = F.softmax(xout_t_corrected)
         
         x_t = np.random.choice(model.emb_size, 1, p=xhat_t.detach().numpy())
@@ -307,13 +364,12 @@ if __name__ == "__main__":
     loss_func = nn.CrossEntropyLoss(reduction='mean')
     
 
-    train_for_epoch(rnn, scores=inputs, vocab = vocab,
+    train_for_epoch(rnn, scores=inputs, dev_scores = dev_scores, vocab = vocab,
                     optimizer=optimizer, loss_func=loss_func, batch_size=1)
 
     output_dir = "src/rnn/results/{:%Y%m%d_%H%M%S}/".format(datetime.now())
-    output_path = output_dir + "model.weights"
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
         
-    train(rnn, train_data=scores, vocab=vocab, output_path=output_path, batch_size=64, n_epochs=10, lr=0.0005)
+    train(rnn, train_data=scores, dev_data = [], vocab=vocab, output_dir=output_dir, batch_size=10, n_epochs=10, lr=0.0005)
